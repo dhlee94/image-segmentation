@@ -6,15 +6,14 @@ import os
 from timm.models.layers import to_2tuple
 
 class ImageDataset(Dataset):
-    def __init__(self, Image_path, num_class, one_hot=True, transform=None):
+    def __init__(self, Image_path, num_class=1, one_hot=True, transform=None):
         self.Image_path = Image_path
-        self.Image_lists = image_lists
         self.transform = transform
         self.num_class = num_class
         self.one_hot = one_hot
 
     def __len__(self):
-        return len(self.Image_lists)
+        return len(self.Image_path['image'])
 
     def _one_hot_encoding(self, data):
         H, W = data.shape
@@ -31,11 +30,11 @@ class ImageDataset(Dataset):
         return new_data
 
     def __getitem__(self, idx):
-        data = Image.open(self.Image_path[idx]['image']).convert('RGB')
-        target = Image.open(self.Image_path[idx]['label']).convert('L')
-        target = self.one_hot_encoding(target)
+        data = Image.open(self.Image_path['image'][idx]).convert('RGB')
+        target = Image.open(self.Image_path['label'][idx]).convert('L')
+        #target = self.one_hot_encoding(target)
         if self.transform != None:
-            transformed = self.transform(image=input, mask=target)
-            return transformed['image'], transformed['mask']
+            transformed = self.transform(image=np.array(data), mask=np.array(target)//255)
+            return transformed['image'], transformed['mask'].unsqueeze(0)
         else:
-            return torch.FloatTensor(input.permute(2, 0, 1)), torch.LongTensor(target)
+            return torch.FloatTensor(data.permute(2, 0, 1)), torch.LongTensor(target).unsqueeze(0)
