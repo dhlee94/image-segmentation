@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.autograd import Function, Variable
+from utils.utils import flatten
 
 class FocalLoss(nn.Module):
     def __init__(self, gamma=0, alpha=None, size_average=True):
@@ -229,7 +230,7 @@ class CrossEntropy(nn.Module):
         return loss
 
 class DiceLoss(nn.Module):
-    def __init__(self, n_classes, bias=None, softmax=False, sigmoid=False, weight=None, average=True):
+    def __init__(self, n_classes, bias=1e-6, softmax=False, sigmoid=False, weight=None, average=True):
         super(DiceLoss, self).__init__()
         self.n_classes = n_classes
         self.bias = bias
