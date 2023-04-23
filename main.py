@@ -36,7 +36,7 @@ parser.add_argument('--out_channels', default=1, type=int, help='Number of class
 parser.add_argument('--filter_size', default=[32, 64, 128, 256, 512], help='ResUnet Filter size')
 parser.add_argument('--optim', default="SGD", type=str, help='type of optimizer')
 parser.add_argument('--momentum', default=0.95, type=float, help='SGD momentum')
-parser.add_argument('--lr', default=1e-4, type=float, help='Train Learning Rate')
+parser.add_argument('--lr', default=1e-3, type=float, help='Train Learning Rate')
 parser.add_argument('--optimizer_eps', default=1e-8, type=float, help='AdamW optimizer eps')
 parser.add_argument('--optimizer_betas', default=(0.9, 0.999), help='AdamW optimizer betas')
 parser.add_argument('--weight_decay', default=0.95, type=float, help='Optimizer weight decay parameter')
@@ -103,12 +103,19 @@ def main():
     #model init
     print("Model Init")
     model = ResUnetA(img_size=args.img_size, channels=args.in_channels, classes=args.out_channels, filtersize=args.filter_size, check_sigmoid=False)
-    optimizer = torch.optim.AdamW(model.parameters(), eps=args.optimizer_eps, betas=args.optimizer_betas,
-                                lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = CosineAnnealingWarmUpRestarts(optimizer, T_0=args.t_scheduler, T_mult=args.trigger_scheduler,
-                                                    eta_max=args.eta_scheduler, T_up=args.up_scheduler, gamma=args.gamma_scheduler)
-    criterion = DiceLoss(n_classes=1)
-
+    
+    if args.optim=='SGD':
+        optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
+    else:
+        optimizer = optim.AdamW(model.parameters(), eps=args.optimizer_eps, betas=args.optimizer_betas,
+                                        lr=args.lr, weight_decay=args.weight_decay)
+    if args.scheduler=='LambdaLR':
+        scheduler = optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lambda epoch:args.lambda_weight**epoch)
+    else:
+        scheduler = CosineAnnealingWarmUpRestarts(optimizer, T_0=args.t_scheduler, T_mult=args.trigger_scheduler, 
+                                                  eta_max=args.eta_scheduler, T_up=args.up_scheduler, gamma=args.gamma_scheduler)
+    
+    criterion = DiceLoss(n_classes=1, sigmoid=True)
     model = model.to(device)
     criterion = criterion.to(device)    
     if args.model_path:
@@ -124,7 +131,7 @@ def main():
         is_best = False
         file = open(os.path.join(args.log_path, f'{epoch}_log.txt'), 'a')
         train(model=model, write_iter_num=args.write_iter_num, train_dataset=trainloader, optimizer=optimizer, 
-                    device=device, criterion=criterion, epoch=epoch, file=file)
+                device=device, criterion=criterion, epoch=epoch, file=file)
         accuracy = valid(model=model, write_iter_num=args.write_iter_num, valid_dataset=validloader, criterion=criterion, 
                                device=device, epoch=epoch, file=file)
         scheduler.step()
@@ -140,7 +147,6 @@ def main():
         file.close()
 
 def train(model=None, write_iter_num=5, train_dataset=None, optimizer=None, device=None, criterion=torch.nn.CrossEntropyLoss(), epoch=None, file=None):
-    best_loss = 0
     scaler = torch.cuda.amp.GradScaler()
     assert train_dataset is not None, print("train_dataset is none")
     model.train()        
@@ -155,7 +161,7 @@ def train(model=None, write_iter_num=5, train_dataset=None, optimizer=None, devi
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        accuracy = DiceAccuracy(Output, label, thresh=0.5, softmax=True)
+        accuracy = DiceAccuracy(Output, label, n_classes=1, thresh=0.5, sigmoid=True)
         ave_accuracy.update(accuracy)
         if idx % write_iter_num == 0:
             tqdm.write(f'Epoch : {epoch} Iter : {idx}/{len(train_dataset)} '
@@ -167,6 +173,8 @@ def train(model=None, write_iter_num=5, train_dataset=None, optimizer=None, devi
                     f'Accuracy : {accuracy :.2f} ', file=file)
     tqdm.write(f'Average Accuracy : {ave_accuracy.average() :.4f} \n\n')
     tqdm.write(f'Average Accuracy : {ave_accuracy.average() :.4f} \n\n', file=file)
+
+    return model
     
 def valid(model=None, write_iter_num=5, valid_dataset=None, criterion=torch.nn.CrossEntropyLoss(), device=None, epoch=None, file=None):
     ave_accuracy = AverageMeter()
@@ -179,7 +187,7 @@ def valid(model=None, write_iter_num=5, valid_dataset=None, criterion=torch.nn.C
             label = Label.to(device, non_blocking=True)
             Output = model(Input)
             loss = criterion(Output, label)
-            accuracy = DiceAccuracy(Output, label, thresh=0.5, softmax=True)
+            accuracy = DiceAccuracy(Output, label, n_classes=1, thresh=0.5, sigmoid=True)
             ave_accuracy.update(accuracy)
             if idx % write_iter_num == 0:
                 tqdm.write(f'Epoch : {epoch} Iter : {idx}/{len(valid_dataset)} '
