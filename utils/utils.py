@@ -58,58 +58,10 @@ class AverageMeter(object):
     def average(self):
         return self.avg
 
-def create_logger(cfg, cfg_name, phase='train'):
-    root_output_dir = Path(cfg.OUTPUT_DIR)
-    # set up logger
-    if not root_output_dir.exists():
-        print('=> creating {}'.format(root_output_dir))
-        root_output_dir.mkdir()
-
-    dataset = cfg.DATASET.DATASET
-    model = cfg.MODEL.NAME
-    cfg_name = os.path.basename(cfg_name).split('.')[0]
-
-    final_output_dir = root_output_dir / dataset / cfg_name
-
-    print('=> creating {}'.format(final_output_dir))
-    final_output_dir.mkdir(parents=True, exist_ok=True)
-
-    time_str = time.strftime('%Y-%m-%d-%H-%M')
-    log_file = '{}_{}_{}.log'.format(cfg_name, time_str, phase)
-    final_log_file = final_output_dir / log_file
-    head = '%(asctime)-15s %(message)s'
-    logging.basicConfig(filename=str(final_log_file),
-                        format=head)
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    console = logging.StreamHandler()
-    logging.getLogger('').addHandler(console)
-
-    tensorboard_log_dir = Path(cfg.LOG_DIR) / dataset / model / \
-            (cfg_name + '_' + time_str)
-    print('=> creating {}'.format(tensorboard_log_dir))
-    tensorboard_log_dir.mkdir(parents=True, exist_ok=True)
-
-    return logger, str(final_output_dir), str(tensorboard_log_dir)
-
 def save_checkpoint(state, is_best, path, filename='checkpoint.pth.tar'):
     torch.save(state, os.path.join(path, filename))
     if is_best:
         shutil.copyfile(os.path.join(path, filename), os.path.join(path, 'model_best.pth.tar'))
-
-def flatten(tensor):
-    """Flattens a given tensor such that the channel axis is first.
-    The shapes are transformed as follows:
-       (N, C, D, H, W) -> (C, N * D * H * W)
-    """
-    # number of channels
-    C = tensor.size(1)
-    # new axis order
-    axis_order = (1, 0) + tuple(range(2, tensor.dim()))
-    # Transpose: (N, C, D, H, W) -> (C, N, D, H, W)
-    transposed = tensor.permute(axis_order)
-    # Flatten: (C, N, D, H, W) -> (C, N * D * H * W)
-    return transposed.contiguous().view(C, -1)
 
 def DiceAccuracy(score, target, n_classes=4, sigmoid=False, softmax=False, thresh=0.5):
     if softmax:
@@ -149,3 +101,17 @@ def IoUAccuracy(score, target, eps=1e-6):
         union = box1_area + box2_area - inter
         iou_acc += (inter / (union+eps)).mean()
     return iou_acc / D
+
+def flatten(tensor):
+    """Flattens a given tensor such that the channel axis is first.
+    The shapes are transformed as follows:
+       (N, C, D, H, W) -> (C, N * D * H * W)
+    """
+    # number of channels
+    C = tensor.size(1)
+    # new axis order
+    axis_order = (1, 0) + tuple(range(2, tensor.dim()))
+    # Transpose: (N, C, D, H, W) -> (C, N, D, H, W)
+    transposed = tensor.permute(axis_order)
+    # Flatten: (C, N, D, H, W) -> (C, N * D * H * W)
+    return transposed.contiguous().view(C, -1)
