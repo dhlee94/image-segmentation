@@ -1,8 +1,6 @@
-from utils.utils import seed_everything
+from utils.utils import seed_everything, save_checkpoint
 import argparse
-#import wandb
-from core.function import train, valid
-from core.criterion import MultiClassDiceCELoss
+from core.criterion import MultiClassDiceCELoss, DiceLoss
 import pickle
 import numpy as np
 from core.optimizer import CosineAnnealingWarmUpRestarts
@@ -14,18 +12,21 @@ import torch
 import torch.nn as nn
 import os
 import albumentations
-import albumentations.pytorch
+import albumentations.pytorch as transforms
 import torch.optim as optim
 from timm.scheduler.cosine_lr import CosineLRScheduler
+import pandas as pd
+import cv2
+from utils.utils import AverageMeter, DiceAccuracy, IoUAccuracy
+from tqdm  import tqdm
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
-
 parser = argparse.ArgumentParser()
 parser.add_argument('--seed', type=int,
                     default=304, help='random seed')
 parser.add_argument('--csv_path', type=str, required=True, metavar="FILE", help='Train and Valid Csv file directory path')
 parser.add_argument('--log_path', type=str, default='./log', help='Save log file path')
-parser.add_argument('--img_size', default=256, type=int, help='Resize img size')
+parser.add_argument('--img_size', default=128, type=int, help='Resize img size')
 parser.add_argument('--gpu', default="0", type=str, help='use gpu num')
 parser.add_argument('--workers', default=1, type=int, help='dataloader workers')
 parser.add_argument('--epoch', default=100, type=int, help='Train Epoch')
@@ -33,13 +34,25 @@ parser.add_argument('--batch_size', default=4, type=int, help='Train Batch size'
 parser.add_argument('--in_channels', default=3, type=int, help='input image channels')
 parser.add_argument('--out_channels', default=1, type=int, help='Number of class')
 parser.add_argument('--filter_size', default=[32, 64, 128, 256, 512], help='ResUnet Filter size')
-parser.add_argument('--optim_eps', default=1e-8, type=float, help='AdamW Optimizer eps parameter')
-parser.add_argument('--optim_betas', default=(0.9, 0.999), help='AdamW Optimizer betas parameter')
-parser.add_argument('--lr', default=1e-4, type=float, help='Optimizer learning rate parameter')
+parser.add_argument('--optim', default="SGD", type=str, help='type of optimizer')
+parser.add_argument('--momentum', default=0.95, type=float, help='SGD momentum')
+parser.add_argument('--lr', default=1e-4, type=float, help='Train Learning Rate')
+parser.add_argument('--optimizer_eps', default=1e-8, type=float, help='AdamW optimizer eps')
+parser.add_argument('--optimizer_betas', default=(0.9, 0.999), help='AdamW optimizer betas')
 parser.add_argument('--weight_decay', default=0.95, type=float, help='Optimizer weight decay parameter')
+parser.add_argument('--scheduler', default="LambdaLR", type=str, help='type of Scheduler')
+parser.add_argument('--lambda_weight', default=0.975, type=float, help='LambdaLR Scheduler lambda weight')
+parser.add_argument('--t_scheduler', default=80, type=int, help='CosineAnnealingWarmUpRestarts optimizer time step')
+parser.add_argument('--trigger_scheduler', default=1, type=int, help='CosineAnnealingWarmUpRestarts optimizer T trigger')
+parser.add_argument('--eta_scheduler', default=1.25e-3, type=float, help='CosineAnnealingWarmUpRestarts optimizer eta max')
+parser.add_argument('--up_scheduler', default=8, type=int, help='CosineAnnealingWarmUpRestarts optimizer time Up')
+parser.add_argument('--gamma_scheduler', default=0.5, type=float, help='CosineAnnealingWarmUpRestarts optimizer gamma')
 parser.add_argument('--model_path', default=None, type=str, help='retrain model load path')
 parser.add_argument('--model_save_path', default='./weight', type=str, help='model save path')
 parser.add_argument('--write_iter_num', default=20, type=int, help='write learning situation iteration time')
+
+
+
 
 def main():
     args = parser.parse_args()
@@ -51,7 +64,7 @@ def main():
     train_csv = pd.read_csv(os.path.join(args.csv_path, 'Train_data.csv'))
     valid_csv = pd.read_csv(os.path.join(args.csv_path, 'Valid_data.csv'))
     
-    image_shape = to_2tuple(arg.img_size)
+    image_shape = to_2tuple(args.img_size)
     height, width = image_shape
     train_transform = albumentations.Compose(
             [
@@ -64,7 +77,7 @@ def main():
                     albumentations.GaussNoise(p=1)                    
                 ],p=1),
                 albumentations.Normalize(),
-                albumentations.ToTensorV2()
+                transforms.ToTensorV2()
             ]
         )
     valid_transform = albumentations.Compose(
@@ -75,26 +88,26 @@ def main():
                     albumentations.VerticalFlip(p=1)
                 ],p=1),
                 albumentations.Normalize(),
-                albumentations.ToTensorV2()
+                transforms.ToTensorV2()
             ]
         )
         
     #del data_file
-    train_dataset = ImageDataset(Image_path=train_csv, transform=None)
+    train_dataset = ImageDataset(Image_path=train_csv, transform=train_transform)
     trainloader = DataLoader(train_dataset, batch_size=args.batch_size,
                              num_workers=args.workers, pin_memory=True, shuffle=True)
-    valid_dataset = ImageDataset(Image_path=valid_csv, transform=None)
+    valid_dataset = ImageDataset(Image_path=valid_csv, transform=valid_transform)
     validloader = DataLoader(valid_dataset, batch_size=args.batch_size,
                              num_workers=args.workers, pin_memory=True, shuffle=False)
     
     #model init
     print("Model Init")
     model = ResUnetA(img_size=args.img_size, channels=args.in_channels, classes=args.out_channels, filtersize=args.filter_size, check_sigmoid=False)
-    optimizer = torch.optim.AdamW(model.parameters(), eps=args.optim_eps, betas=args.optim_betas,
+    optimizer = torch.optim.AdamW(model.parameters(), eps=args.optimizer_eps, betas=args.optimizer_betas,
                                 lr=args.lr, weight_decay=args.weight_decay)
-    lr_scheduler = CosineAnnealingWarmUpRestarts(optimizer, T_0=args.scheduler_t, T_mult=args.scheduler_tmult,
-                                                    eta_max=args.scheduler_eta, T_up=args.scheduler_up, gamma=args.scheduler_gamma)
-    criterion = MultiClassDiceCELoss(num_classes=args.out_channels)
+    scheduler = CosineAnnealingWarmUpRestarts(optimizer, T_0=args.t_scheduler, T_mult=args.trigger_scheduler,
+                                                    eta_max=args.eta_scheduler, T_up=args.up_scheduler, gamma=args.gamma_scheduler)
+    criterion = DiceLoss(n_classes=1)
 
     model = model.to(device)
     criterion = criterion.to(device)    
@@ -110,8 +123,6 @@ def main():
     for epoch in range(start_epoch, args.epoch):
         is_best = False
         file = open(os.path.join(args.log_path, f'{epoch}_log.txt'), 'a')
-        if args.distributed:
-            train_sampler.set_epoch(epoch)    
         train(model=model, write_iter_num=args.write_iter_num, train_dataset=trainloader, optimizer=optimizer, 
                     device=device, criterion=criterion, epoch=epoch, file=file)
         accuracy = valid(model=model, write_iter_num=args.write_iter_num, valid_dataset=validloader, criterion=criterion, 
@@ -127,6 +138,59 @@ def main():
             'scheduler' : scheduler.state_dict()
         }, is_best=is_best, path=args.model_save_path)
         file.close()
+
+def train(model=None, write_iter_num=5, train_dataset=None, optimizer=None, device=None, criterion=torch.nn.CrossEntropyLoss(), epoch=None, file=None):
+    best_loss = 0
+    scaler = torch.cuda.amp.GradScaler()
+    assert train_dataset is not None, print("train_dataset is none")
+    model.train()        
+    ave_accuracy = AverageMeter()
+    #scaler = torch.cuda.amp.GradScaler()
+    for idx, (Image, Label) in enumerate(tqdm(train_dataset)):
+        #model input data
+        Input = Image.to(device, non_blocking=True)
+        label = Label.to(device, non_blocking=True)
+        Output = model(Input)
+        loss = criterion(Output, label)            
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        accuracy = DiceAccuracy(Output, label, thresh=0.5, softmax=True)
+        ave_accuracy.update(accuracy)
+        if idx % write_iter_num == 0:
+            tqdm.write(f'Epoch : {epoch} Iter : {idx}/{len(train_dataset)} '
+                       f'Loss : {loss :.4f} '
+                       f'Accuracy : {accuracy :.2f} ')
+        if idx % (2*write_iter_num) == 0:
+            tqdm.write(f'Epoch : {epoch} Iter : {idx}/{len(train_dataset)} '
+                    f'Loss : {loss :.4f} '
+                    f'Accuracy : {accuracy :.2f} ', file=file)
+    tqdm.write(f'Average Accuracy : {ave_accuracy.average() :.4f} \n\n')
+    tqdm.write(f'Average Accuracy : {ave_accuracy.average() :.4f} \n\n', file=file)
     
+def valid(model=None, write_iter_num=5, valid_dataset=None, criterion=torch.nn.CrossEntropyLoss(), device=None, epoch=None, file=None):
+    ave_accuracy = AverageMeter()
+    assert valid_dataset is not None, print("train_dataset is none")
+    model.eval()
+    with torch.no_grad():
+        for idx, (Image, Label) in enumerate(tqdm(valid_dataset)):
+            #model input data
+            Input = Image.to(device, non_blocking=True)
+            label = Label.to(device, non_blocking=True)
+            Output = model(Input)
+            loss = criterion(Output, label)
+            accuracy = DiceAccuracy(Output, label, thresh=0.5, softmax=True)
+            ave_accuracy.update(accuracy)
+            if idx % write_iter_num == 0:
+                tqdm.write(f'Epoch : {epoch} Iter : {idx}/{len(valid_dataset)} '
+                        f'Loss : {loss :.4f} '
+                        f'Accuracy : {accuracy :.2f} ')
+            if idx % (2*write_iter_num) == 0:
+                tqdm.write(f'Epoch : {epoch} Iter : {idx}/{len(valid_dataset)} '
+                        f'Loss : {loss :.4f} '
+                        f'Accuracy : {accuracy :.2f} ', file=file)
+        tqdm.write(f'Average Accuracy : {ave_accuracy.average() :.2f} ', file=file)
+    return ave_accuracy.average()        
+
 if __name__ == '__main__':
     main()
