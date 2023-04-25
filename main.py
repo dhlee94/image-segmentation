@@ -1,4 +1,4 @@
-from utils.utils import seed_everything, save_checkpoint
+from utils.utils import seed_everything
 import argparse
 from core.criterion import MultiClassDiceCELoss, DiceLoss
 import pickle
@@ -17,8 +17,7 @@ import torch.optim as optim
 from timm.scheduler.cosine_lr import CosineLRScheduler
 import pandas as pd
 import cv2
-from utils.utils import AverageMeter, DiceAccuracy, IoUAccuracy
-from tqdm  import tqdm
+from core.function import train_epoch
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 parser = argparse.ArgumentParser()
@@ -50,9 +49,6 @@ parser.add_argument('--gamma_scheduler', default=0.5, type=float, help='CosineAn
 parser.add_argument('--model_path', default=None, type=str, help='retrain model load path')
 parser.add_argument('--model_save_path', default='./weight', type=str, help='model save path')
 parser.add_argument('--write_iter_num', default=20, type=int, help='write learning situation iteration time')
-
-
-
 
 def main():
     args = parser.parse_args()
@@ -127,78 +123,8 @@ def main():
     else:
         start_epoch = 0
         best_loss = 0
-    for epoch in range(start_epoch, args.epoch):
-        is_best = False
-        file = open(os.path.join(args.log_path, f'{epoch}_log.txt'), 'a')
-        train(model=model, write_iter_num=args.write_iter_num, train_dataset=trainloader, optimizer=optimizer, 
-                device=device, criterion=criterion, epoch=epoch, file=file)
-        accuracy = valid(model=model, write_iter_num=args.write_iter_num, valid_dataset=validloader, criterion=criterion, 
-                               device=device, epoch=epoch, file=file)
-        scheduler.step()
-        is_best = accuracy > best_loss
-        best_loss = max(best_loss, accuracy)
-        save_checkpoint({
-            'epoch': epoch + 1,
-            'state_dict': model.state_dict(),
-            'best_acc1': best_loss,
-            'optimizer' : optimizer.state_dict(),
-            'scheduler' : scheduler.state_dict()
-        }, is_best=is_best, path=args.model_save_path)
-        file.close()
-
-def train(model=None, write_iter_num=5, train_dataset=None, optimizer=None, device=None, criterion=torch.nn.CrossEntropyLoss(), epoch=None, file=None):
-    scaler = torch.cuda.amp.GradScaler()
-    assert train_dataset is not None, print("train_dataset is none")
-    model.train()        
-    ave_accuracy = AverageMeter()
-    #scaler = torch.cuda.amp.GradScaler()
-    for idx, (Image, Label) in enumerate(tqdm(train_dataset)):
-        #model input data
-        Input = Image.to(device, non_blocking=True)
-        label = Label.to(device, non_blocking=True)
-        Output = model(Input)
-        loss = criterion(Output, label)            
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        accuracy = DiceAccuracy(Output, label, n_classes=1, thresh=0.5, sigmoid=True)
-        ave_accuracy.update(accuracy)
-        if idx % write_iter_num == 0:
-            tqdm.write(f'Epoch : {epoch} Iter : {idx}/{len(train_dataset)} '
-                       f'Loss : {loss :.4f} '
-                       f'Accuracy : {accuracy :.2f} ')
-        if idx % (2*write_iter_num) == 0:
-            tqdm.write(f'Epoch : {epoch} Iter : {idx}/{len(train_dataset)} '
-                    f'Loss : {loss :.4f} '
-                    f'Accuracy : {accuracy :.2f} ', file=file)
-    tqdm.write(f'Average Accuracy : {ave_accuracy.average() :.4f} \n\n')
-    tqdm.write(f'Average Accuracy : {ave_accuracy.average() :.4f} \n\n', file=file)
-
-    return model
-    
-def valid(model=None, write_iter_num=5, valid_dataset=None, criterion=torch.nn.CrossEntropyLoss(), device=None, epoch=None, file=None):
-    ave_accuracy = AverageMeter()
-    assert valid_dataset is not None, print("train_dataset is none")
-    model.eval()
-    with torch.no_grad():
-        for idx, (Image, Label) in enumerate(tqdm(valid_dataset)):
-            #model input data
-            Input = Image.to(device, non_blocking=True)
-            label = Label.to(device, non_blocking=True)
-            Output = model(Input)
-            loss = criterion(Output, label)
-            accuracy = DiceAccuracy(Output, label, n_classes=1, thresh=0.5, sigmoid=True)
-            ave_accuracy.update(accuracy)
-            if idx % write_iter_num == 0:
-                tqdm.write(f'Epoch : {epoch} Iter : {idx}/{len(valid_dataset)} '
-                        f'Loss : {loss :.4f} '
-                        f'Accuracy : {accuracy :.2f} ')
-            if idx % (2*write_iter_num) == 0:
-                tqdm.write(f'Epoch : {epoch} Iter : {idx}/{len(valid_dataset)} '
-                        f'Loss : {loss :.4f} '
-                        f'Accuracy : {accuracy :.2f} ', file=file)
-        tqdm.write(f'Average Accuracy : {ave_accuracy.average() :.2f} ', file=file)
-    return ave_accuracy.average()        
-
+    train_epoch(model=model, write_iter_num=args.write_iter_num, trainloader=trainloader, validloader=validloader, optimizer=optimizer, scheduler=scheduler, device=device, 
+                criterion=criterion, start_epoch=start_epoch, end_epoch=args.epoch, log_path=args.log_path, model_path=args.model_save_path, best_loss=best_loss)
+      
 if __name__ == '__main__':
     main()

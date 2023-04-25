@@ -63,13 +63,13 @@ def save_checkpoint(state, is_best, path, filename='checkpoint.pth.tar'):
     if is_best:
         shutil.copyfile(os.path.join(path, filename), os.path.join(path, 'model_best.pth.tar'))
 
-def DiceAccuracy(score, target, n_classes=4, sigmoid=False, softmax=False, thresh=0.5):
+def DiceAccuracy(score, target, n_classes=4, sigmoid=True, softmax=False, thresh=0.5):
     if softmax:
         score = torch.softmax(score, dim=1).detach()
     elif sigmoid:
         score = torch.sigmoid(score).detach()
     smooth = 1e-5
-    score[score>thresh] = 1
+    score[score>=thresh] = 1
     score[score<thresh] = 0
     if n_classes!=1:
         target_list = []
